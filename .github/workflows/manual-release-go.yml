@@ -87,8 +87,6 @@ jobs:
       - name: Build and package
         shell: bash
         run: |
-          set -euo pipefail
-
           TAG="${{ github.event.inputs.tag }}"
           PKG="${{ github.event.inputs.package }}"
           NAME="${{ steps.names.outputs.bin }}"
