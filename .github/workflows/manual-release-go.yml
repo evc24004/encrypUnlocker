@@ -53,6 +53,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
+      - name: Configure git identity
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Ensure tag exists (create if missing)
         shell: bash
         run: |
