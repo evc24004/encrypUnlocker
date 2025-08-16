@@ -5,10 +5,9 @@ on:
     inputs:
       tag:
         description: Git tag to create
-        required: true
         default: v1.0.0
       name:
-        description: Release name
+        description: Release name (defaults to tag)
         required: false
       prerelease:
         description: Mark as pre-release
@@ -16,11 +15,11 @@ on:
         type: boolean
         default: false
       package:
-        description: Go package/main path to build
+        description: Go package/main path to build (e.g. . or ./cmd/app)
         required: true
         default: .
       binary_name:
-        description: Output binary name
+        description: Output binary name (defaults to repo name)
         required: false
         default: hive-connector
 
@@ -29,58 +28,43 @@ permissions:
   actions: read
 
 env:
-  GO_VERSION: "1.22.x"
+  GO_VERSION: "1.24.x"
 
 jobs:
   build:
     name: Build ${{ github.event.inputs.tag }} for ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format(' (armv{0})', matrix.goarm) || '' }}
     runs-on: ubuntu-latest
-
     strategy:
       fail-fast: false
       matrix:
         include:
-          - goos: linux
-            goarch: amd64
-            goarm: ""
-            ext: ""
-            archive: tar.gz
-          - goos: linux
-            goarch: arm64
-            goarm: ""
-            ext: ""
-            archive: tar.gz
-          - goos: linux
-            goarch: arm
-            goarm: "7"
-            ext: ""
-            archive: tar.gz
-          - goos: windows
-            goarch: amd64
-            goarm: ""
-            ext: ".exe"
-            archive: zip
-          - goos: windows
-            goarch: arm64
-            goarm: ""
-            ext: ".exe"
-            archive: zip
-          - goos: darwin
-            goarch: amd64
-            goarm: ""
-            ext: ""
-            archive: tar.gz
-          - goos: darwin
-            goarch: arm64
-            goarm: ""
-            ext: ""
-            archive: tar.gz
+          - { goos: linux,   goarch: amd64, goarm: "",  ext: "",     archive: tar.gz }
+          - { goos: linux,   goarch: arm64, goarm: "",  ext: "",     archive: tar.gz }
+          - { goos: linux,   goarch: arm,   goarm: "7", ext: "",     archive: tar.gz }
+          - { goos: windows, goarch: amd64, goarm: "",  ext: ".exe", archive: zip }
+          - { goos: windows, goarch: arm64, goarm: "",  ext: ".exe", archive: zip }
+          - { goos: darwin,  goarch: amd64, goarm: "",  ext: "",     archive: tar.gz }
+          - { goos: darwin,  goarch: arm64, goarm: "",  ext: "",     archive: tar.gz }
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: true
+
+      - name: Ensure tag exists (create if missing)
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag ${TAG} already exists."
+          else
+            echo "Creating tag ${TAG}"
+            git tag -a "${TAG}" -m "Release ${TAG}"
+            git push origin "refs/tags/${TAG}"
+          fi
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -114,7 +98,6 @@ jobs:
           EXT="${{ matrix.ext }}"
           ARCHIVE="${{ matrix.archive }}"
 
-          # Output directories
           mkdir -p "dist/${TAG}"
           OUTDIR="dist/${TAG}/${NAME}_${TAG}_${GOOS}_${GOARCH}"
           if [ -n "${GOARM}" ]; then
@@ -122,44 +105,29 @@ jobs:
           fi
           mkdir -p "${OUTDIR}"
 
-          # Build
           export CGO_ENABLED=0
           export GOOS GOARCH
           if [ -n "${GOARM}" ]; then export GOARM; fi
 
           echo "Building ${NAME} for ${GOOS}/${GOARCH}${GOARM:+ (armv${GOARM})}"
+          go env
           go mod download
-          go build -trimpath -ldflags "-s -w -X main.version=${TAG}" -o "${OUTDIR}/${NAME}${EXT}" "${PKG}"
+          set -x
+          go build -v -trimpath -ldflags "-s -w -X main.version=${TAG}" -o "${OUTDIR}/${NAME}${EXT}" "${PKG}"
+          set +x
 
-          # Attach common docs if present
-          [ -f LICENSE ] && cp LICENSE "${OUTDIR}/"
           [ -f README.md ] && cp README.md "${OUTDIR}/"
 
-          # Package
           pushd "dist/${TAG}" >/dev/null
-          case "${ARCHIVE}" in
-            zip)
-              if [ -n "${GOARM}" ]; then
-                ARCHIVE_NAME="${NAME}_${TAG}_${GOOS}_armv${GOARM}.zip"
-              else
-                ARCHIVE_NAME="${NAME}_${TAG}_${GOOS}_${GOARCH}.zip"
-              fi
-              (cd "$(basename "${OUTDIR}")" && zip -r "../${ARCHIVE_NAME}" .)
-              ;;
-            tar.gz)
-              if [ -n "${GOARM}" ]; then
-                ARCHIVE_NAME="${NAME}_${TAG}_${GOOS}_armv${GOARM}.tar.gz"
-              else
-                ARCHIVE_NAME="${NAME}_${TAG}_${GOOS}_${GOARCH}.tar.gz"
-              fi
-              (cd "$(basename "${OUTDIR}")" && tar -czf "../${ARCHIVE_NAME}" .)
-              ;;
-          esac
-          popd >/dev/null
-
-          # Checksums
-          pushd "dist/${TAG}" >/dev/null
-          sha256sum *.zip *.tar.gz 2>/dev/null | sort -k2 > SHA256SUMS
+          if [ "${ARCHIVE}" = "zip" ]; then
+            ARCHIVE_NAME="${NAME}_${TAG}_${GOOS}_${GOARCH}.zip"
+            [ -n "${GOARM}" ] && ARCHIVE_NAME="${NAME}_${TAG}_${GOOS}_armv${GOARM}.zip"
+            (cd "$(basename "${OUTDIR}")" && zip -r "../${ARCHIVE_NAME}" .)
+          else
+            ARCHIVE_NAME="${NAME}_${TAG}_${GOOS}_${GOARCH}.tar.gz"
+            [ -n "${GOARM}" ] && ARCHIVE_NAME="${NAME}_${TAG}_${GOOS}_armv${GOARM}.tar.gz"
+            (cd "$(basename "${OUTDIR}")" && tar -czf "../${ARCHIVE_NAME}" .)
+          fi
           popd >/dev/null
 
       - name: Upload build artifacts
@@ -169,7 +137,6 @@ jobs:
           path: |
             dist/${{ github.event.inputs.tag }}/*.zip
             dist/${{ github.event.inputs.tag }}/*.tar.gz
-            dist/${{ github.event.inputs.tag }}/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
 
@@ -184,10 +151,12 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: List files
+      - name: Generate SHA256SUMS (all artifacts)
+        shell: bash
         run: |
-          echo "Downloaded files:"
-          find dist -type f -maxdepth 2 -print
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          find dist -type f \( -name '*.zip' -o -name '*.tar.gz' \) -print0 | xargs -0 sha256sum | sort -k2 > "dist/${TAG}_SHA256SUMS"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -200,6 +169,6 @@ jobs:
           files: |
             dist/**/*.zip
             dist/**/*.tar.gz
-            dist/**/SHA256SUMS
+            dist/*_SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
