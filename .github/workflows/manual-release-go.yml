@@ -4,7 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Git tag to create
+        description: Git tag to use/create (e.g. v1.0.0)
+        required: true
         default: v1.0.0
       name:
         description: Release name (defaults to tag)
@@ -51,22 +52,23 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
+          fetch-tags: true
 
       - name: Configure git identity
         run: |
-          git config --global user.name "github-actions[bot]"
+          git config --global user.name  "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Ensure tag exists (create if missing)
+      - name: Ensure tag exists (create only if missing remotely)
         shell: bash
         run: |
           set -euo pipefail
           TAG="${{ github.event.inputs.tag }}"
-          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
-            echo "Tag ${TAG} already exists."
+          # Check REMOTE first
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists on origin. Not creating."
           else
-            echo "Creating tag ${TAG}"
+            echo "Creating tag ${TAG} at current HEAD and pushing..."
             git tag -a "${TAG}" -m "Release ${TAG}"
             git push origin "refs/tags/${TAG}"
           fi
@@ -113,7 +115,6 @@ jobs:
           if [ -n "${GOARM}" ]; then export GOARM; fi
 
           echo "Building ${NAME} for ${GOOS}/${GOARCH}${GOARM:+ (armv${GOARM})}"
-          go env
           go mod download
           set -x
           go build -v -trimpath -ldflags "-s -w -X main.version=${TAG}" -o "${OUTDIR}/${NAME}${EXT}" "${PKG}"
@@ -154,7 +155,7 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: Generate SHA256SUMS (all artifacts)
+      - name: Generate SHA256SUMS
         shell: bash
         run: |
           set -euo pipefail
