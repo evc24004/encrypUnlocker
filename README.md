@@ -1,4 +1,6 @@
-Join a partnered/Third party server, and decrypt their protected assets. 
+[![Manual Release (Go)](https://github.com/DJStompZone/PackUnPacker/actions/workflows/manual-release-go.yml/badge.svg)](https://github.com/DJStompZone/PackUnPacker/actions/workflows/manual-release-go.yml)
+
+Join a partnered/Third party server, and decrypt their protected assets.
 
 pack.mcpack (ZIP bytes)
   -> contents.json.enc [optional 256-byte header if magic 0x9BCFB9FC]

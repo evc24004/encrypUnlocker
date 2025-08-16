@@ -1,0 +1,178 @@
+name: Manual Release (Go)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Git tag to use/create (e.g. v1.0.0)
+        required: true
+        default: v1.0.0
+      name:
+        description: Release name (defaults to tag)
+        required: false
+      prerelease:
+        description: Mark as pre-release
+        required: true
+        type: boolean
+        default: false
+      package:
+        description: Go package/main path to build (e.g. . or ./cmd/app)
+        required: true
+        default: .
+      binary_name:
+        description: Output binary name (defaults to repo name)
+        required: false
+        default: hive-connector
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  GO_VERSION: "1.24.x"
+
+jobs:
+  build:
+    name: Build ${{ github.event.inputs.tag }} for ${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format(' (armv{0})', matrix.goarm) || '' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64, goarm: "",  ext: "",     archive: tar.gz }
+          - { goos: linux,   goarch: arm64, goarm: "",  ext: "",     archive: tar.gz }
+          - { goos: linux,   goarch: arm,   goarm: "7", ext: "",     archive: tar.gz }
+          - { goos: windows, goarch: amd64, goarm: "",  ext: ".exe", archive: zip }
+          - { goos: windows, goarch: arm64, goarm: "",  ext: ".exe", archive: zip }
+          - { goos: darwin,  goarch: amd64, goarm: "",  ext: "",     archive: tar.gz }
+          - { goos: darwin,  goarch: arm64, goarm: "",  ext: "",     archive: tar.gz }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Ensure tag exists (create only if missing remotely)
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          # Check REMOTE first
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists on origin. Not creating."
+          else
+            echo "Creating tag ${TAG} at current HEAD and pushing..."
+            git tag -a "${TAG}" -m "Release ${TAG}"
+            git push origin "refs/tags/${TAG}"
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Resolve binary name
+        id: names
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.binary_name }}" ]; then
+            BIN="${{ github.event.inputs.binary_name }}"
+          else
+            BIN="$(basename "${GITHUB_REPOSITORY}")"
+          fi
+          echo "bin=${BIN}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and package
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          PKG="${{ github.event.inputs.package }}"
+          NAME="${{ steps.names.outputs.bin }}"
+          GOOS="${{ matrix.goos }}"
+          GOARCH="${{ matrix.goarch }}"
+          GOARM="${{ matrix.goarm }}"
+          EXT="${{ matrix.ext }}"
+          ARCHIVE="${{ matrix.archive }}"
+
+          mkdir -p "dist/${TAG}"
+          OUTDIR="dist/${TAG}/${NAME}_${TAG}_${GOOS}_${GOARCH}"
+          if [ -n "${GOARM}" ]; then
+            OUTDIR="dist/${TAG}/${NAME}_${TAG}_${GOOS}_armv${GOARM}"
+          fi
+          mkdir -p "${OUTDIR}"
+
+          export CGO_ENABLED=0
+          export GOOS GOARCH
+          if [ -n "${GOARM}" ]; then export GOARM; fi
+
+          echo "Building ${NAME} for ${GOOS}/${GOARCH}${GOARM:+ (armv${GOARM})}"
+          go mod download
+          set -x
+          go build -v -trimpath -ldflags "-s -w -X main.version=${TAG}" -o "${OUTDIR}/${NAME}${EXT}" "${PKG}"
+          set +x
+
+          [ -f README.md ] && cp README.md "${OUTDIR}/"
+
+          pushd "dist/${TAG}" >/dev/null
+          if [ "${ARCHIVE}" = "zip" ]; then
+            ARCHIVE_NAME="${NAME}_${TAG}_${GOOS}_${GOARCH}.zip"
+            [ -n "${GOARM}" ] && ARCHIVE_NAME="${NAME}_${TAG}_${GOOS}_armv${GOARM}.zip"
+            (cd "$(basename "${OUTDIR}")" && zip -r "../${ARCHIVE_NAME}" .)
+          else
+            ARCHIVE_NAME="${NAME}_${TAG}_${GOOS}_${GOARCH}.tar.gz"
+            [ -n "${GOARM}" ] && ARCHIVE_NAME="${NAME}_${TAG}_${GOOS}_armv${GOARM}.tar.gz"
+            (cd "$(basename "${OUTDIR}")" && tar -czf "../${ARCHIVE_NAME}" .)
+          fi
+          popd >/dev/null
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm && format('-armv{0}', matrix.goarm) || '' }}
+          path: |
+            dist/${{ github.event.inputs.tag }}/*.zip
+            dist/${{ github.event.inputs.tag }}/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          find dist -type f \( -name '*.zip' -o -name '*.tar.gz' \) -print0 | xargs -0 sha256sum | sort -k2 > "dist/${TAG}_SHA256SUMS"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          name: ${{ github.event.inputs.name || github.event.inputs.tag }}
+          draft: false
+          prerelease: ${{ github.event.inputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            dist/**/*.zip
+            dist/**/*.tar.gz
+            dist/*_SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

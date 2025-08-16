@@ -18,6 +18,7 @@ import (
     "golang.org/x/crypto/pbkdf2"
     "strings"
     "time"
+    "flag"
 
     "github.com/go-jose/go-jose/v4/json"
     "github.com/sandertv/gophertunnel/minecraft"
@@ -43,9 +44,17 @@ var (
     expectedPacks  = make(map[string]struct{})
     completedPacks = make(map[string]struct{})
     conn           *minecraft.Conn
+    version        = "dev"
 )
 
 func main() {
+    v := flag.Bool("version", false, "print version and exit")
+    flag.Parse()
+    if *v {
+        fmt.Println(version)
+        os.Exit(0)
+    }
+
     if err := os.MkdirAll(packsDir, 0755); err != nil {
         fmt.Printf("❌ Failed to create packs directory: %v\n", err)
         return
@@ -618,3 +627,4 @@ func min(a, b int) int {
     }
     return b
 }
+

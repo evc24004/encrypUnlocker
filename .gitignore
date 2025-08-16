@@ -1,0 +1,5 @@
+hive-connector
+*.json
+packs/
+*.env
+*.tar.[bgx]z
